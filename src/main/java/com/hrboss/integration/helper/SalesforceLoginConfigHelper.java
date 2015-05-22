@@ -53,9 +53,8 @@ public class SalesforceLoginConfigHelper {
 	public static SalesforceLoginConfig getDefaultLogin() {
 		final SalesforceLoginConfig config = new SalesforceLoginConfig(
 				SalesforceLoginConfig.DEFAULT_LOGIN_URL,
-				"3MVG9I1kFE5Iul2BLhYUBv2s5B6ndxx8LPJecj5cBYNkD9DDrqeL3Sm7LQ6REzZ6vb4MvWG9G65rxXYxGLHyr", "6630656843211848500",
-				//"bernie.schiemer@hiringboss.com", "Remember12", LAZY_LOGIN);
-				"bruce.nguyen@hiringboss.com", "Hrb0ss2015", LAZY_LOGIN);
+				"3MVG9fMtCkV6eLhepJuasZZ7OzymyGMNikp2IxdqQ8H1Jx_uWNkSU5gIA9.mxSzlsGoNzEE18cy2XKPARvA_o", "7483376435449564293",
+				"kennethwpeeples@redhat.com", "Ke!thluvsmem@re2013", LAZY_LOGIN);
 		return config;
 	}
 }
