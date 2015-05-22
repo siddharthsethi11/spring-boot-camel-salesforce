@@ -1,0 +1,120 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<groupId>org.springframework.samples</groupId>
+	<artifactId>spring-camel-salesforce-integration</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+
+	<properties>
+
+		<!-- Generic properties -->
+		<java.version>1.8</java.version>
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+		<!-- Spring -->
+		<spring-framework.version>3.2.3.RELEASE</spring-framework.version>
+
+		<!-- Hibernate / JPA -->
+		<hibernate.version>4.2.1.Final</hibernate.version>
+
+		<!-- Logging -->
+		<logback.version>1.0.13</logback.version>
+		<slf4j.version>1.7.5</slf4j.version>
+
+		<!-- Test -->
+		<junit.version>4.11</junit.version>
+		<!--  
+		<camel.version>2.14.1-redhat-01</camel.version>
+		-->
+		<camel.version>2.15.1</camel.version>
+		<jetty.version>8.1.16.v20140903</jetty.version>
+		<mongo-java-driver.version>2.12.2</mongo-java-driver.version>
+	</properties>
+
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>1.2.3.RELEASE</version>
+	</parent>
+	<!--  
+	<repositories>
+		<repository>
+			<id>release.fusesource.org</id>
+			<name>FuseSource Release Repository</name>
+			<url>http://repository.jboss.org/nexus/content/repositories/fs-releases</url>
+			<snapshots>
+				<enabled>false</enabled>
+			</snapshots>
+			<releases>
+				<enabled>true</enabled>
+			</releases>
+		</repository>
+	</repositories>
+	-->  
+  
+	<dependencies>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-web</artifactId>
+		</dependency>
+        <!-- MongoDB - dependencies -->
+        <dependency>
+            <groupId>org.mongodb</groupId>
+            <artifactId>mongo-java-driver</artifactId>
+            <version>${mongo-java-driver.version}</version>
+        </dependency>		
+		<!-- INTEGRATION dependencies -->
+		<dependency>
+			<groupId>org.apache.camel</groupId>
+			<artifactId>camel-core</artifactId>
+			<version>${camel.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.camel</groupId>
+			<artifactId>camel-spring</artifactId>
+			<version>${camel.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.camel</groupId>
+			<artifactId>camel-salesforce</artifactId>
+			<version>${camel.version}</version>
+			<exclusions>
+				<exclusion>
+          			<groupId>org.eclipse.jetty</groupId>
+          			<artifactId>jetty-http</artifactId>
+        		</exclusion>
+				<exclusion>
+          			<groupId>org.eclipse.jetty</groupId>
+          			<artifactId>jetty-util</artifactId>
+        		</exclusion>
+				<exclusion>
+          			<groupId>org.eclipse.jetty</groupId>
+          			<artifactId>jetty-io</artifactId>
+        		</exclusion>        		        		
+			</exclusions>
+		</dependency>
+		<dependency>
+			<groupId>org.eclipse.jetty</groupId>
+			<artifactId>jetty-http</artifactId>
+			<version>${jetty.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.eclipse.jetty</groupId>
+			<artifactId>jetty-util</artifactId>
+			<version>${jetty.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.eclipse.jetty</groupId>
+			<artifactId>jetty-io</artifactId>
+			<version>${jetty.version}</version>
+		</dependency>
+
+		<dependency>
+			<groupId>com.google.guava</groupId>
+			<artifactId>guava</artifactId>
+			<version>16.0.1</version>
+		</dependency>
+	</dependencies>
+
+</project>
