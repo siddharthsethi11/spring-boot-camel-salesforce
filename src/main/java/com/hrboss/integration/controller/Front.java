@@ -11,20 +11,20 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.ResponseBody;
 
-import com.hrboss.datasource.crm.CrmMetadataManager;
-import com.hrboss.datasource.crm.CrmObjectManager;
+import com.hrboss.datasource.crm.CrmDatasourceManager;
 import com.hrboss.integration.helper.ObjectHelper;
 import com.hrboss.model.DataSet;
 import com.hrboss.model.DataSource;
 import com.hrboss.model.DatasourceType;
+import com.hrboss.model.RawData;
 
 @Controller
 public class Front {
 
-	private static final String EMAIL = "bernie.schiemer@hiringboss.com";
-	private static final String PASSWORD = "Remember12";
-	private static final String CONSUMER_SECRET = "6630656843211848500";
-	private static final String CONSUMER_KEY = "3MVG9I1kFE5Iul2BLhYUBv2s5B6ndxx8LPJecj5cBYNkD9DDrqeL3Sm7LQ6REzZ6vb4MvWG9G65rxXYxGLHyr";
+	private static final String EMAIL = "kennethwpeeples@redhat.com";
+	private static final String PASSWORD = "Ke!thluvsmem@re2013";
+	private static final String CONSUMER_SECRET = "7483376435449564293";
+	private static final String CONSUMER_KEY = "3MVG9fMtCkV6eLhepJuasZZ7OzymyGMNikp2IxdqQ8H1Jx_uWNkSU5gIA9.mxSzlsGoNzEE18cy2XKPARvA_o";
 	private static final Logger LOG = LoggerFactory.getLogger(Front.class);
 	
 	static DataSource ds = new DataSource();
@@ -37,15 +37,13 @@ public class Front {
 	}
 
 	@Autowired
-	CrmMetadataManager crmDSMgr;
-	@Autowired
-	CrmObjectManager crmObjMgr;
+	CrmDatasourceManager crmDatasourceManager;
 
 	@RequestMapping(value = "/login", method = RequestMethod.GET)
 	@ResponseBody
 	String home() {
 		try {
-			boolean ok = crmDSMgr.testConnection(ds);
+			boolean ok = crmDatasourceManager.testConnection(ds);
 			if (ok) {
 				return "Hello " + ds.getEmail() + "!";
 			} else {
@@ -57,14 +55,26 @@ public class Front {
 			return e.getMessage();
 		}
 	}
-	
-	@RequestMapping(value = "/{object}/count", method = RequestMethod.GET)
+
+	@RequestMapping(value = "/describe", method = RequestMethod.GET)
 	@ResponseBody
-	String count(@PathVariable("object") String objectName) {
+	String describeAll() {
+		return describe(null);
+	}
+	
+	@RequestMapping(value = "/describe/{object}", method = RequestMethod.GET)
+	@ResponseBody
+	String describe(@PathVariable("object") String objectName) {
 		try {
-			List<DataSet> dataSet = crmDSMgr.buildObjectsMetadata(ds, objectName);
-			return "Number of object {" + objectName + "} : "
-					+ dataSet.get(0).getRowCount();
+			long duration = System.nanoTime();
+			List<DataSet> dataSet = crmDatasourceManager.buildObjectsMetadata(ds, objectName);
+			duration = System.nanoTime() - duration;
+			StringBuilder sb = new StringBuilder("Fetch all meta-data from Salesforce account successfully in " + ((int)duration / 1000) + "ms :");
+			dataSet.stream().forEach(row -> {
+				sb.append("<p>").append("Object {" + row.getName() + "} has " + row.getRowCount() + " item(s).").append("</p>");
+				LOG.debug(ObjectHelper.print(row));
+			});
+			return sb.toString();
 		} catch (Exception e) {
 			LOG.error(e.getMessage());
 			e.printStackTrace();
@@ -72,24 +82,24 @@ public class Front {
 		}
 	}
 	
-	/*@RequestMapping(value = "/{object}/import", method = RequestMethod.GET)
+	@RequestMapping(value = "/getAll/{object}", method = RequestMethod.GET)
 	@ResponseBody
-	String importObject(@PathVariable("object") String objectName) {
-		try {
-			return "Number of object {" + objectName + "} imported : "
-					+ crmObjMgr.fetchRemoteObjects(DatasourceType.SALESFORCE, objectName, 10, 0);
-		} catch (Exception e) {
-			e.printStackTrace();
-			return e.getMessage();
-		}
-	}*/
+	String getAll(@PathVariable("object") String objectName) {
+		return getWindow(objectName, -1, -1);
+	}
 	
-	@RequestMapping(value = "/{object}/get/{id}", method = RequestMethod.GET)
+	@RequestMapping(value = "/getAll/{object}/{limit}/{offset}", method = RequestMethod.GET)
 	@ResponseBody
-	String getObject(@PathVariable("object") String objectName, @PathVariable("id") String objectId) {
+	String getWindow(@PathVariable("object") String objectName, @PathVariable("limit") int limit, @PathVariable("offset") int offset) {
 		try {
-			Object o = crmObjMgr.getObjectData(ds, objectName, objectId);
-			return ObjectHelper.debug(o);
+			DataSet dataset = new DataSet();
+			dataset.setName(objectName);
+			List<RawData> data = crmDatasourceManager.getObjectsData(ds, dataset, limit, offset);
+			StringBuilder sb = new StringBuilder();
+			data.stream().forEach(row -> {
+				sb.append("<p>").append(ObjectHelper.print(row)).append("</p>");
+			});
+			return sb.toString();
 		} catch (Exception e) {
 			e.printStackTrace();
 			return e.getMessage();

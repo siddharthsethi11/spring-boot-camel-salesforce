@@ -5,6 +5,13 @@ import java.nio.charset.Charset;
 
 import com.google.common.hash.Hashing;
 
+/**
+ * DTO class represents a Salesforce credentials object extracted from the Dataset
+ * Also is a Camel Header embedded in the Exchange object.
+ *  
+ * @author bruce.nguyen
+ *
+ */
 public class SalesforceCredentials implements Serializable {
 
 	/**

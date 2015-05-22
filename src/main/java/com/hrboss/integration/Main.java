@@ -11,25 +11,20 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 
-@ComponentScan(basePackages = { "com.hrboss.datasource", "com.hrboss.integration" })
+@ComponentScan(basePackages = { "com.hrboss" })
 @EnableAutoConfiguration
 public class Main {
 
 	public static void main(String[] args) throws Exception {
 		SpringApplication.run(Main.class, args);
 	}
-
-	//@Bean
-    //public EmbeddedServletContainerFactory servletContainer() {
-    //    TomcatEmbeddedServletContainerFactory factory = new TomcatEmbeddedServletContainerFactory();
-    //    return factory;
-    //}
 	
     // ==== Required for Camel beans in Spring context ====
+	
     @Bean
     CamelContext camelContext(ApplicationContext context) {
         CamelContext camelContext = new SpringCamelContext(context);
-        SpringCamelContext.setNoStart(true);
+        //SpringCamelContext.setNoStart(true);
         camelContext.disableJMX();
         return camelContext;
     }
@@ -47,4 +42,5 @@ public class Main {
         processor.setApplicationContext(context);
         return processor;
     }
+    
 }

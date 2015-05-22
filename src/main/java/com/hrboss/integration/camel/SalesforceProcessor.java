@@ -1,15 +1,15 @@
 package com.hrboss.integration.camel;
 
-import java.util.Arrays;
+
+
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.apache.camel.CamelExecutionException;
 import org.apache.camel.ProducerTemplate;
-import org.apache.camel.builder.RouteBuilder;
-import org.apache.camel.component.salesforce.SalesforceComponent;
 import org.apache.camel.component.salesforce.api.dto.GlobalObjects;
 import org.apache.camel.component.salesforce.api.dto.SObject;
 import org.apache.camel.component.salesforce.api.dto.SObjectDescription;
@@ -24,69 +24,48 @@ import org.springframework.util.StringUtils;
 
 import com.hrboss.integration.camel.dto.QueryRecords;
 import com.hrboss.integration.camel.dto.SalesforceCredentials;
-import com.hrboss.integration.camel.router.DynamicSalesforceComponentRouter;
 import com.hrboss.integration.helper.ObjectHelper;
-import com.hrboss.integration.helper.SalesforceLoginConfigHelper;
 
+/**
+ * Main processor for the Salesforce integration.
+ * 
+ * @author bruce.nguyen
+ *
+ */
 @Component
-public class SalesforceProcessor extends RouteBuilder {
+public class SalesforceProcessor {
 
 	private static final Logger LOG = LoggerFactory.getLogger(SalesforceProcessor.class);
-
-	//public static final String HEADER_CREDENTIALS = "credentials";
-	public static final String COMPONENT_NAME = "SalesforceComponent";
+	public static final String HEADER_CREDENTIALS = "credentials";
 	public static final String FROM_COMPONENT = "direct:";
-	//public static final String FROM_URI_FAILED_LOGIN = "failedLogin";
+	public static final String FROM_URI_FAILED_LOGIN = "failedLogin";
 	public static final String FROM_URI_GET_VERSIONS = "getVersions";
 	public static final String FROM_URI_GET_GLOBAL_OBJECTS = "getGlobalObjects";
 	public static final String FROM_URI_GET_DESCRIPTION = "describeObject";
-	public static final String FROM_URI_GET_OBJECT = "getObject";
 	public static final String FROM_URI_COUNT_OBJECTS = "countObject";
-	public static final String FROM_URI_IMPORT_OBJECT = "import";
+	public static final String FROM_URI_GET_OBJECT = "getObject";
+	public static final String FROM_URI_GET_OBJECT_WINDOW = "getObjectWindow";
 	
 	@Autowired
 	ProducerTemplate template;
-	
-	private String componentName(SalesforceCredentials creds) {
-		return new StringBuilder("salesforce").append(creds.uniqueHash()).toString();
-	}
-	
-	private void ensureComponentExistence(SalesforceCredentials creds) {
-		Assert.notNull(creds, "Salesforce Credentials must be set in the message header");
-		SalesforceComponent component = (SalesforceComponent) template.getCamelContext().getComponent(componentName(creds));
-		if (component == null) {
-			component = new SalesforceComponent();
-			component.setLoginConfig(SalesforceLoginConfigHelper.getLoginConfig(creds));
-			//component.setPackages("org.apache.camel.salesforce.dto");
-			template.getCamelContext().addComponent(componentName(creds), component);
-		}
-		try {
-			if (!component.isStarted() && !component.isStarting()) {
-				component.start();
-			}
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-	}
 
-	private void evictComponent(SalesforceCredentials creds) {
-		Assert.notNull(creds, "Salesforce Credentials must be set in the message header");
-		SalesforceComponent component = (SalesforceComponent) template.getCamelContext().getComponent(componentName(creds));
-		try {
-			if (component != null && !component.isStoppingOrStopped()) {
-				component.stop(); // release the resource used by the component
-			}
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-	}
-
+	/**
+	 * Trigger the Salesforce REST API <a href=
+	 * "http://www.salesforce.com/us/developer/docs/api_rest/Content/resources_versions.htm"
+	 * >Versions</a> via the Camel SF component
+	 * 
+	 * @param creds
+	 *            Salesforce credentials
+	 * @return the collection of
+	 *         {@link org.apache.camel.component.salesforce.api.dto.Version}
+	 *         object
+	 * @throws Exception
+	 */
 	@SuppressWarnings("unchecked")
 	public Collection<Version> getVersions(SalesforceCredentials creds) throws Exception {
 		List<Version> versions = null;
-		ensureComponentExistence(creds);
 		try {
-			Object o = template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_GET_VERSIONS, (Object) null, COMPONENT_NAME, componentName(creds));
+			Object o = template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_GET_VERSIONS, (Object) null, HEADER_CREDENTIALS, creds);
 			if (o instanceof Versions) {
 				versions = ((Versions) o).getVersions();
 			} else {
@@ -94,87 +73,183 @@ public class SalesforceProcessor extends RouteBuilder {
 			}
 			debug(versions);
 		} catch (CamelExecutionException camelEx) {
-			evictComponent(creds);
+			LOG.warn("User failed to log in to Salesforce account using the provided credentials.", camelEx);
+			// release the resource
+			template.sendBodyAndHeader(FROM_COMPONENT + FROM_URI_FAILED_LOGIN, null, HEADER_CREDENTIALS, creds);
 			throw camelEx;
 		}
 		return versions;
 	}
 
+	/**
+	 * Trigger the Salesforce REST API <a href=
+	 * "http://www.salesforce.com/us/developer/docs/api_rest/Content/resources_describeGlobal.htm"
+	 * >Describe Global</a> via the Camel SF component
+	 * <p>
+	 * Return the list of SF objects used by the user, or one SF object if
+	 * specified.
+	 * </p>
+	 * 
+	 * @param creds
+	 *            Salesforce credentials
+	 * @param objectName
+	 *            If empty, return the whole SObject lists used by the owner
+	 * @return the collection of
+	 *         {@link org.apache.camel.component.salesforce.api.dto.SObject}
+	 *         object
+	 * @throws Exception
+	 */
 	public Collection<SObject> getObjectTypes(SalesforceCredentials creds, String objectName) throws Exception {
-		ensureComponentExistence(creds);
-		GlobalObjects globalObjects = (GlobalObjects) template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_GET_GLOBAL_OBJECTS, (Object) null, COMPONENT_NAME, componentName(creds));
+		GlobalObjects globalObjects = (GlobalObjects) template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_GET_GLOBAL_OBJECTS, (Object) null, 
+				HEADER_CREDENTIALS, creds);
 		debug(globalObjects);
 		if (!StringUtils.isEmpty(objectName)) {
-			for (SObject sObj : globalObjects.getSobjects()) {
-				if (objectName.equals(sObj.getName())) {
-					return Arrays.asList(sObj);
-				}
-			}
-			//return globalObjects.getSobjects().stream()
-			//		.filter(sObj -> objectName.equals(sObj.getName()))
-			//		.collect(Collectors.toList());
+			return globalObjects.getSobjects().stream()
+					.filter(sObj -> objectName.equals(sObj.getName()))
+					.collect(Collectors.toList());
 		}
 		return globalObjects.getSobjects();
 	}
-	
+
+	/**
+	 * Trigger the Salesforce REST API <a href=
+	 * "http://www.salesforce.com/us/developer/docs/api_rest/Content/resources_sobject_describe.htm"
+	 * >SObject Describe</a> via the Camel SF component
+	 * <p>
+	 * Return the description of the specified object.
+	 * </p>
+	 * 
+	 * @param creds
+	 *            Salesforce credentials
+	 * @param objectName
+	 *            the SObject to be described
+	 * @return the description object
+	 *         {@link org.apache.camel.component.salesforce.api.dto.SObjectDescription}
+	 * @throws Exception
+	 */
 	public SObjectDescription describeObject(SalesforceCredentials creds, final String objectName) throws Exception {
 		Assert.notNull(objectName, "objectName should not be null");
-		ensureComponentExistence(creds);
-		SObjectDescription objectDescription = template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_GET_DESCRIPTION, objectName, COMPONENT_NAME, componentName(creds), SObjectDescription.class);
+		SObjectDescription objectDescription = template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_GET_DESCRIPTION, objectName, 
+				HEADER_CREDENTIALS, creds, SObjectDescription.class);
 		debug(objectDescription);
 		return objectDescription;
 	}
-	
-	public int countObject(SalesforceCredentials creds, final SObject sObj) throws Exception {
-		ensureComponentExistence(creds);
-		Assert.notNull(sObj, "SObject should not be null");
-		QueryRecords<?> queryResult = template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_COUNT_OBJECTS, sObj.getName(), COMPONENT_NAME, componentName(creds), QueryRecords.class);
+
+	/**
+	 * Trigger the Salesforce REST API <a href=
+	 * "http://www.salesforce.com/us/developer/docs/api_rest/Content/resources_sobject_basic_info.htm"
+	 * >SObject Basic Information</a> via the Camel SF component
+	 * <p>
+	 * Count the basic information (name and url) of the specified object type.
+	 * </p>
+	 * 
+	 * @param creds
+	 *            Salesforce credentials
+	 * @param sObj
+	 *            the SObject to be counted
+	 * @return the number of instances of the specified SObject
+	 * @throws Exception
+	 */
+	public int countObject(SalesforceCredentials creds, final String objectName) throws Exception {
+		Assert.notNull(objectName, "objectName should not be null");
+		QueryRecords<?> queryResult = template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_COUNT_OBJECTS, objectName, 
+				HEADER_CREDENTIALS, creds, QueryRecords.class);
 		debug(queryResult);
-		Assert.notNull(queryResult, "QueryRecords should not be null");
 		return queryResult.getTotalSize();
 	}
 	
-	public Object getObject(final SalesforceCredentials creds, final List<String> fields, final String objectName, final String objectId) throws Exception {
-		//Assert.notNull(sObj, "SObject should not be null");
-		ensureComponentExistence(creds);
-		Map<String, Object> headers = new HashMap<String, Object>() {
+	/**
+	 * Trigger the Salesforce REST API <a href=
+	 * "http://www.salesforce.com/us/developer/docs/api_rest/Content/resources_query.htm"
+	 * >Query</a> to query the object based on its ID via the Camel SF
+	 * component.
+	 * 
+	 * @param creds
+	 *            Salesforce credentials
+	 * @param objectName
+	 *            the object name
+	 * @param objectId
+	 *            the ID of the object
+	 * @param fields
+	 *            the list of fields to be retrieved
+	 * @return the full object data
+	 * @throws Exception
+	 */
+	public Object getObject(SalesforceCredentials creds, final String objectName, final String objectId, final List<String> fields) throws Exception {
+
+		Map<String, Object> headers = new HashMap<String, Object>(3){
+			private static final long serialVersionUID = -8085699581668229109L;
 			{
-			put(COMPONENT_NAME, componentName(creds));
-			put("objectName", objectName);
-			put("fields", StringUtils.collectionToCommaDelimitedString(fields));
+				put(HEADER_CREDENTIALS, creds);
+				put("objectName", objectName);
+				put("fields", StringUtils.collectionToCommaDelimitedString(fields));
 			}
 		};
-		Object o = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_OBJECT, objectId, headers);
-		debug(o);
-		return o;
-	}
-	
-	/*public List<?> fetchObjects(final SalesforceCredentials creds, final String objectName, final int limit, final int offset) throws Exception {
-		Assert.notNull(objectName, "Object Name should not be null");
-		ensureComponentExistence(creds);
-		Map<String, Object> headers = new HashMap<String, Object>() {
-			{
-			put(HEADER_CREDENTIALS, creds);
-			put("limit", limit);
-			put("offset", offset);
-			}
-		};
-		
-		List<?> queryResult = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_IMPORT_OBJECT, objectName, headers, List.class);
-		debug(queryResult);
-		Assert.notNull(queryResult, "Result should not be null");
-		return queryResult;
-	}*/
-	
-	private void debug(Object obj) throws Exception {
-		if (LOG.isDebugEnabled()) {
-			LOG.debug(ObjectHelper.debug(obj));
+		StringBuilder queryBuilder = new StringBuilder("SELECT ");
+		queryBuilder.append(StringUtils.collectionToCommaDelimitedString(fields))
+				.append(" FROM ").append(objectName)
+				.append(" WHERE id='").append(objectId).append("'");
+		QueryRecords<?> query = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_OBJECT, queryBuilder.toString(), 
+				headers, QueryRecords.class);
+		debug(query);
+		if (query.getTotalSize() > 0) {
+			return query.getRecords().get(0);
+		} else {
+			return null;
 		}
 	}
 	
-	@Override
-	public void configure() throws Exception {
-		from(FROM_COMPONENT + FROM_URI_GET_VERSIONS).dynamicRouter(method(DynamicSalesforceComponentRouter.class, "getVersion"));
-	}
+	/**
+	 * Trigger the Salesforce REST API <a href=
+	 * "http://www.salesforce.com/us/developer/docs/api_rest/Content/resources_query.htm"
+	 * >Query</a> to query a number of objects of a type within a window defined
+	 * by limit and offset via the Camel SF component.
+	 * 
+	 * @param creds
+	 *            Salesforce credentials
+	 * @param objectName
+	 *            the object name
+	 * @param fields
+	 *            the list of fields to be retrieved
+	 * @param limit
+	 *            the window limit
+	 * @param offset
+	 *            the offset of the window
+	 * @return the list of objects and their data
+	 * @throws Exception
+	 */
+	public QueryRecords<?> getObjectWindows(SalesforceCredentials creds, final String objectName, final List<String> fields, int limit, int offset) throws Exception {
 
+		Map<String, Object> headers = new HashMap<String, Object>(3){
+			private static final long serialVersionUID = -6937282097678143102L;
+			{
+				put(HEADER_CREDENTIALS, creds);
+				put("objectName", objectName);
+				put("fields", StringUtils.collectionToCommaDelimitedString(fields));
+			}
+		};
+		StringBuilder queryBuilder = new StringBuilder("SELECT ");
+		queryBuilder.append(StringUtils.collectionToCommaDelimitedString(fields))
+				.append(" FROM ").append(objectName);
+		if (limit > 0 && offset >= 0) {
+			queryBuilder.append(" LIMIT ").append(limit);
+			queryBuilder.append(" OFFSET ").append(offset);
+		}
+		QueryRecords<?> query = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_OBJECT_WINDOW, queryBuilder.toString(), 
+				headers, QueryRecords.class);
+		debug(query);
+		return query;
+	}
+	
+	/**
+	 * For debugging purpose only. Print out the pretty JSON data of the object
+	 * 
+	 * @param obj
+	 * @throws Exception
+	 */
+	private void debug(Object obj) {
+		if (LOG.isDebugEnabled()) {
+			LOG.debug(ObjectHelper.print(obj));
+		}
+	}
 }
