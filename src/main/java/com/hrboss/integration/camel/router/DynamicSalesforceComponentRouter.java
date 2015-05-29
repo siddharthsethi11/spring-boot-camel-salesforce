@@ -1,13 +1,21 @@
 package com.hrboss.integration.camel.router;
+import static com.hrboss.integration.camel.SalesforceProcessor.CONNECTION_TIMEOUT;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_COMPONENT;
+import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_CHECK_BATCH_STATUS;
+import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_CLOSE_JOB;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_COUNT_OBJECTS;
+import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_CREATE_BATCH;
+import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_CREATE_JOB;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_FAILED_LOGIN;
+import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_BATCH_DATA;
+import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_BATCH_RESULTS;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_DESCRIPTION;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_GLOBAL_OBJECTS;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_OBJECT;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_OBJECT_WINDOW;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_VERSIONS;
 import static com.hrboss.integration.camel.SalesforceProcessor.HEADER_CREDENTIALS;
+import static com.hrboss.integration.camel.SalesforceProcessor.RESPONSE_TIMEOUT;
 
 import java.util.Map;
 
@@ -15,9 +23,13 @@ import org.apache.camel.Body;
 import org.apache.camel.CamelContext;
 import org.apache.camel.Consume;
 import org.apache.camel.DynamicRouter;
+import org.apache.camel.Exchange;
 import org.apache.camel.Header;
 import org.apache.camel.Properties;
 import org.apache.camel.component.salesforce.SalesforceComponent;
+import org.apache.camel.component.salesforce.SalesforceEndpointConfig;
+import org.apache.camel.component.salesforce.api.dto.bulk.BatchInfo;
+import org.eclipse.jetty.client.HttpClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -70,21 +82,33 @@ public class DynamicSalesforceComponentRouter {
 	 * 
 	 * @param creds Salesforce Credentials
 	 */
-	private void ensureComponentExistence(SalesforceCredentials creds) {
+	private SalesforceComponent ensureComponentExistence(SalesforceCredentials creds) {
 		Assert.notNull(creds, "Salesforce Credentials must be set in the message header");
 		SalesforceComponent component = (SalesforceComponent) camelContext.getComponent(componentName(creds));
 		if (component == null) {
 			component = new SalesforceComponent();
+			// configure login
 			component.setLoginConfig(SalesforceLoginConfigHelper.getLoginConfig(creds));
+			// configure HttpClient
+			SalesforceEndpointConfig config = new SalesforceEndpointConfig();
+			HttpClient httpClient = new HttpClient();
+            httpClient.setConnectorType(HttpClient.CONNECTOR_SELECT_CHANNEL);
+            httpClient.setConnectTimeout(CONNECTION_TIMEOUT);
+            httpClient.setTimeout(RESPONSE_TIMEOUT);
+            config.setHttpClient(httpClient);
+            component.setConfig(config);
+            
 			camelContext.addComponent(componentName(creds), component);
 		}
 		try {
 			if (!component.isStarted() && !component.isStarting()) {
 				component.start();
 			}
+			LOG.debug("Salesforce component session: " + component.getSession().getAccessToken());
 		} catch (Exception e) {
 			LOG.error("Failed to start component {" + componentName(creds) + "} due to: " + e.getMessage(), e);
 		}
+		return component;
 	}
 	
 	/**
@@ -140,6 +164,31 @@ public class DynamicSalesforceComponentRouter {
 				return componentName(creds) + ":query?sObjectClass=" + QueryRecords.class.getName();
 			} else if (toEndpoint.endsWith(FROM_URI_GET_OBJECT_WINDOW)) {
 				return componentName(creds) + ":query?sObjectClass=" + QueryRecords.class.getName();
+			} else if (toEndpoint.endsWith(FROM_URI_CREATE_JOB)) {
+				// body: jobInfo
+				return componentName(creds) + ":createJob";
+			} else if (toEndpoint.endsWith(FROM_URI_CLOSE_JOB)) {
+				// body: jobInfo
+				return componentName(creds) + ":closeJob";
+			} else if (toEndpoint.endsWith(FROM_URI_CREATE_BATCH)) {
+				// body: jobInfo & sObjectQuery
+				return componentName(creds) + ":createBatch?contentType="
+						+ properties.get("contentType") + "&jobId="
+						+ properties.get("jobId");
+			} else if (toEndpoint.endsWith(FROM_URI_CHECK_BATCH_STATUS)) {
+				// body: batchInfo
+				return componentName(creds) + ":getBatch";
+			} else if (toEndpoint.endsWith(FROM_URI_GET_BATCH_RESULTS)) {
+				// body: batchInfo
+				return componentName(creds) + ":getQueryResultIds" + "?jobId="
+				+ properties.get("jobId");
+			} else if (toEndpoint.endsWith(FROM_URI_GET_BATCH_DATA)) {
+				// body: batchInfo
+				// header: SalesforceEndpointConfig.RESULT_ID
+				return componentName(creds) + ":getQueryResult?"
+						+ "jobId=" + properties.get("jobId")
+						+ "&batchId=" + properties.get("batchId");
+				
 			} else {
 				/*
 				 * NOTE: this is the exit condition
@@ -200,5 +249,62 @@ public class DynamicSalesforceComponentRouter {
 		properties.put("objectName", objectName);
 		properties.put("fields", fields);
 		return slipOnce(creds, properties, query);
+	}
+	
+	@Consume(uri = FROM_COMPONENT + FROM_URI_CREATE_JOB)
+	@DynamicRouter
+	public String bulkCreateJob(@Header(HEADER_CREDENTIALS) SalesforceCredentials creds, 
+			@Properties Map<String, Object> properties) {
+		return slipOnce(creds, properties, null);
+	}
+	
+	@Consume(uri = FROM_COMPONENT + FROM_URI_CLOSE_JOB)
+	@DynamicRouter
+	public String bulkCloseJob(@Header(HEADER_CREDENTIALS) SalesforceCredentials creds, 
+			@Properties Map<String, Object> properties) {
+		return slipOnce(creds, properties, null);
+	}
+	
+	@Consume(uri = FROM_COMPONENT + FROM_URI_CREATE_BATCH)
+	@DynamicRouter
+	public String bulkCreateBatch(@Header(HEADER_CREDENTIALS) SalesforceCredentials creds,
+			@Header("jobId") String jobId,
+			@Header("contentType") String contentType,
+			@Properties Map<String, Object> properties, @Body String query) {
+		properties.put("jobId", jobId);
+		properties.put("contentType", contentType);
+		return slipOnce(creds, properties, query);
+	}
+	
+	@Consume(uri = FROM_COMPONENT + FROM_URI_CHECK_BATCH_STATUS)
+	@DynamicRouter
+	public String bulkGetBatch(@Header(HEADER_CREDENTIALS) SalesforceCredentials creds,
+			@Properties Map<String, Object> properties, @Body BatchInfo batchInfo) {
+		return slipOnce(creds, properties, batchInfo);
+	}
+	
+	@Consume(uri = FROM_COMPONENT + FROM_URI_GET_BATCH_RESULTS)
+	@DynamicRouter
+	public String bulkGetBatchResults(@Header(HEADER_CREDENTIALS) SalesforceCredentials creds,
+			@Header("jobId") String jobId,
+			@Properties Map<String, Object> properties, @Body String batchId) {
+		properties.put("jobId", jobId);	
+		return slipOnce(creds, properties, batchId);
+	}
+	
+	@Consume(uri = FROM_COMPONENT + FROM_URI_GET_BATCH_DATA)
+	@DynamicRouter
+	public String bulkGetBatchResultData(@Header(HEADER_CREDENTIALS) SalesforceCredentials creds,
+			@Header("jobId") String jobId,
+			@Header("batchId") String batchId,
+			@Properties Map<String, Object> properties, @Body Object body, Exchange exchange) {
+
+		if (body instanceof String) {
+			properties.put("jobId", jobId);
+			properties.put("batchId", batchId);
+			return slipOnce(creds, properties, (String) body);
+		} else {
+			return null;
+		}
 	}
 }

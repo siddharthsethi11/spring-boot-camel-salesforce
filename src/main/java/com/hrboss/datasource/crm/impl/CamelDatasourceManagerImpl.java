@@ -77,14 +77,19 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 		case SALESFORCE:
 			SalesforceCredentials creds = SalesforceLoginConfigHelper.getCredentials(dataSource);
 			// TODO: should make the whole process asynchronous
-			List<DataSet> dataSets = null;
 			try {
 				Collection<SObject> sObjects = salesforceProcessor.getObjectTypes(creds, objectName);
-				dataSets = new ArrayList<DataSet>(sObjects.size());
-				for (final SObject sObj : sObjects) {
+				final List<DataSet> dataSets = new ArrayList<DataSet>(sObjects.size());
+				sObjects.parallelStream().forEach( sObj -> {
 					try { // try to get as many objects as possible
 						LOG.debug("Investigating object type: " + sObj.getName());
 						final DataSet dataSet = new DataSet();
+						// copy information from DataSource
+						// dataSet.setDataSourceId(dataSource.getId());
+						// dataSet.setContainerId(dataSource.getContainerId());
+						// dataSet.setOwnerId(dataSource.getOwner());
+						// dataSet.setRoles(dataSource.getRoles());
+						
 						final BasicDBObject columnMetadataList = new BasicDBObject();
 						final BasicDBList primaryKeys = new BasicDBList();
 						final BasicDBObject foreignKeys = new BasicDBObject();
@@ -119,11 +124,11 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 								+ sObj.getName() + "} due to: "
 								+ e.getCause().getMessage());
 					}
-				}
+				});
+				return dataSets;
 			} catch (Exception e) {
 				throwRootCause(e);
 			}
-			return dataSets;
 		default:
 			return null;
 		}
@@ -142,10 +147,18 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 			String objectName = dataSet.getName();
 			try {
 				SObjectDescription oDesc = salesforceProcessor.describeObject(creds, objectName);
-				final List<String> fields = oDesc.getFields().stream().map(f -> f.getName()).collect(Collectors.toList());
-				QueryRecords<?> resultObj = salesforceProcessor.getObjectWindows(creds, objectName, fields, limit, offset);
+				final List<String> fields = oDesc.getFields().stream()
+						// FUNCTIONALITY_NOT_ENABLED: Selecting compound data not supported in Bulk Query
+						.filter(f -> !f.getSoapType().startsWith("urn:"))
+						.map(f -> f.getName()).collect(Collectors.toList());
+				QueryRecords<?> resultObj = null;
+				if (offset > 0) {
+					resultObj = salesforceProcessor.getObjectWindows(creds, objectName, fields, limit, offset);
+				} else {
+					resultObj = salesforceProcessor.bulkQueryObjects(creds, objectName, fields, limit);
+				}
 				if (resultObj != null && resultObj.getTotalSize() > 0) {
-					return resultObj.getRecords().stream().map(o -> {
+					return resultObj.getRecords().parallelStream().map(o -> {
 						RawData record = new RawData();
 						record.setDatasetId(dataSet.getId());
 						record.put("data", o);

@@ -2,6 +2,8 @@ package com.hrboss.integration.camel;
 
 
 
+import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -15,6 +17,11 @@ import org.apache.camel.component.salesforce.api.dto.SObject;
 import org.apache.camel.component.salesforce.api.dto.SObjectDescription;
 import org.apache.camel.component.salesforce.api.dto.Version;
 import org.apache.camel.component.salesforce.api.dto.Versions;
+import org.apache.camel.component.salesforce.api.dto.bulk.BatchInfo;
+import org.apache.camel.component.salesforce.api.dto.bulk.BatchStateEnum;
+import org.apache.camel.component.salesforce.api.dto.bulk.ContentType;
+import org.apache.camel.component.salesforce.api.dto.bulk.JobInfo;
+import org.apache.camel.component.salesforce.api.dto.bulk.OperationEnum;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +44,12 @@ public class SalesforceProcessor {
 
 	private static final Logger LOG = LoggerFactory.getLogger(SalesforceProcessor.class);
 	public static final String HEADER_CREDENTIALS = "credentials";
+	public static final int CONNECTION_TIMEOUT = 600_000;
+	public static final int RESPONSE_TIMEOUT = 600_000;
+	
+	/*
+	 * Salesforce REST API endpoints
+	 */
 	public static final String FROM_COMPONENT = "direct:";
 	public static final String FROM_URI_FAILED_LOGIN = "failedLogin";
 	public static final String FROM_URI_GET_VERSIONS = "getVersions";
@@ -45,6 +58,15 @@ public class SalesforceProcessor {
 	public static final String FROM_URI_COUNT_OBJECTS = "countObject";
 	public static final String FROM_URI_GET_OBJECT = "getObject";
 	public static final String FROM_URI_GET_OBJECT_WINDOW = "getObjectWindow";
+	/*
+	 * Salesforce Bulk API endpoints
+	 */
+	public static final String FROM_URI_CREATE_JOB = "bulkCreateJob";
+	public static final String FROM_URI_CLOSE_JOB = "bulkCloseJob";
+	public static final String FROM_URI_CREATE_BATCH = "bulkCreateBatch";
+	public static final String FROM_URI_CHECK_BATCH_STATUS = "bulkGetBatch";
+	public static final String FROM_URI_GET_BATCH_RESULTS = "bulkGetBatchResults";
+	public static final String FROM_URI_GET_BATCH_DATA = "bulkGetBatchData";
 	
 	@Autowired
 	ProducerTemplate template;
@@ -239,6 +261,79 @@ public class SalesforceProcessor {
 				headers, QueryRecords.class);
 		debug(query);
 		return query;
+	}
+
+	public QueryRecords<?> bulkQueryObjects(SalesforceCredentials creds, final String objectName, final List<String> fields, int limit) throws Exception {
+
+		QueryRecords<Object> tobeimported = new QueryRecords<Object>();
+		tobeimported.setRecords(new ArrayList<Object>());
+		
+		Map<String, Object> headers = new HashMap<String, Object>(3){
+			private static final long serialVersionUID = -6937282097678143102L;
+			{
+				put(HEADER_CREDENTIALS, creds);
+				put("objectName", objectName);
+				put("fields", StringUtils.collectionToCommaDelimitedString(fields));
+			}
+		};
+		StringBuilder queryBuilder = new StringBuilder("SELECT ");
+		queryBuilder.append(StringUtils.collectionToCommaDelimitedString(fields))
+				.append(" FROM ").append(objectName);
+		if (limit > 0) {
+			queryBuilder.append(" LIMIT ").append(limit);
+		}
+		
+		/*
+		 * Create a QUERY job
+		 */
+		JobInfo jobInfo = new JobInfo();
+        jobInfo.setOperation(OperationEnum.QUERY);
+        jobInfo.setContentType(ContentType.XML);
+        jobInfo.setObject(objectName);
+        jobInfo = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_CREATE_JOB, jobInfo, headers, JobInfo.class);
+        LOG.debug("Import job created: " + ObjectHelper.print(jobInfo));
+		/*
+		 * Create batch
+		 */
+        headers.put("jobId", jobInfo.getId());
+        headers.put("contentType", ContentType.XML.toString());
+        //headers.put("Sforce-Enable-PKChunking", "chunkSize=500;");
+        BatchInfo batchInfo = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_CREATE_BATCH, queryBuilder.toString(), headers, BatchInfo.class);
+		/*
+		 * Check batch status
+		 */
+        while (batchInfo.getState() == BatchStateEnum.IN_PROGRESS 
+        		|| batchInfo.getState() == BatchStateEnum.QUEUED) {
+        	// sleep 5 seconds
+            Thread.sleep(5000);
+        	batchInfo = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_CHECK_BATCH_STATUS, batchInfo, headers, BatchInfo.class);
+        }
+        LOG.debug("Batch completed : " + ObjectHelper.print(batchInfo));
+		/*
+		 * Get batch result
+		 */
+        List<String> resultIds = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_BATCH_RESULTS, batchInfo.getId(), headers, List.class);
+		/* 
+		 * Fetch data
+		 */
+        int rowCount = 0;
+        Collection<Map<String, Object>> jsonObjs = null;
+        for (String resultId : resultIds) {
+        	headers.put("batchId", batchInfo.getId());
+        	long duration = System.currentTimeMillis();
+        	jsonObjs =  ObjectHelper.readXmlStreamToJson(template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_BATCH_DATA, resultId, headers, InputStream.class));
+        	duration = System.currentTimeMillis() - duration;
+        	LOG.debug("Streaming data for resultset {" + resultId + "} takes : " + (duration/1000) + " seconds");
+            rowCount += jsonObjs.size();
+            tobeimported.getRecords().addAll(jsonObjs);
+        }
+        tobeimported.setTotalSize(rowCount);
+        /*
+         * Close job
+         */
+        jobInfo = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_CLOSE_JOB, jobInfo, headers, JobInfo.class);
+        LOG.debug("Import job completed : " + ObjectHelper.print(jobInfo));
+		return tobeimported;
 	}
 	
 	/**

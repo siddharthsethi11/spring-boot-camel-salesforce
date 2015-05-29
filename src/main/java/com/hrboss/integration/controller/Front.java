@@ -21,10 +21,10 @@ import com.hrboss.model.RawData;
 @Controller
 public class Front {
 
-	private static final String EMAIL = "kennethwpeeples@redhat.com";
-	private static final String PASSWORD = "Ke!thluvsmem@re2013";
-	private static final String CONSUMER_SECRET = "7483376435449564293";
-	private static final String CONSUMER_KEY = "3MVG9fMtCkV6eLhepJuasZZ7OzymyGMNikp2IxdqQ8H1Jx_uWNkSU5gIA9.mxSzlsGoNzEE18cy2XKPARvA_o";
+	private static final String EMAIL = "Marketing@hiringboss.com";//"kennethwpeeples@redhat.com";
+	private static final String PASSWORD = "HRBoss2015"; //"Ke!thluvsmem@re2013";
+	private static final String CONSUMER_SECRET = "6630656843211848500"; //"7483376435449564293";
+	private static final String CONSUMER_KEY = "3MVG9I1kFE5Iul2BLhYUBv2s5B6ndxx8LPJecj5cBYNkD9DDrqeL3Sm7LQ6REzZ6vb4MvWG9G65rxXYxGLHyr"; //"3MVG9fMtCkV6eLhepJuasZZ7OzymyGMNikp2IxdqQ8H1Jx_uWNkSU5gIA9.mxSzlsGoNzEE18cy2XKPARvA_o";
 	private static final Logger LOG = LoggerFactory.getLogger(Front.class);
 	
 	static DataSource ds = new DataSource();
@@ -66,10 +66,10 @@ public class Front {
 	@ResponseBody
 	String describe(@PathVariable("object") String objectName) {
 		try {
-			long duration = System.nanoTime();
+			long duration = System.currentTimeMillis();
 			List<DataSet> dataSet = crmDatasourceManager.buildObjectsMetadata(ds, objectName);
-			duration = System.nanoTime() - duration;
-			StringBuilder sb = new StringBuilder("Fetch all meta-data from Salesforce account successfully in " + ((int)duration / 1000) + "ms :");
+			duration = System.currentTimeMillis() - duration;
+			StringBuilder sb = new StringBuilder("Fetch all meta-data from Salesforce account successfully in " + duration + "ms :");
 			dataSet.stream().forEach(row -> {
 				sb.append("<p>").append("Object {" + row.getName() + "} has " + row.getRowCount() + " item(s).").append("</p>");
 				LOG.debug(ObjectHelper.print(row));
