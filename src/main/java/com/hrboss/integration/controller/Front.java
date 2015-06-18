@@ -12,7 +12,9 @@ import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.ResponseBody;
 
 import com.hrboss.datasource.crm.CrmDatasourceManager;
-import com.hrboss.integration.helper.ObjectHelper;
+import com.hrboss.datasource.crm.impl.CamelDatasourceManagerImpl;
+import com.hrboss.integration.camel.SalesforceProcessor;
+import com.hrboss.integration.helper.SalesforceObjectHelper;
 import com.hrboss.model.DataSet;
 import com.hrboss.model.DataSource;
 import com.hrboss.model.DatasourceType;
@@ -72,7 +74,7 @@ public class Front {
 			StringBuilder sb = new StringBuilder("Fetch all meta-data from Salesforce account successfully in " + duration + "ms :");
 			dataSet.stream().forEach(row -> {
 				sb.append("<p>").append("Object {" + row.getName() + "} has " + row.getRowCount() + " item(s).").append("</p>");
-				LOG.debug(ObjectHelper.print(row));
+				LOG.debug(SalesforceObjectHelper.print(row));
 			});
 			return sb.toString();
 		} catch (Exception e) {
@@ -82,22 +84,58 @@ public class Front {
 		}
 	}
 	
-	@RequestMapping(value = "/getAll/{object}", method = RequestMethod.GET)
+	@RequestMapping(value = "/getObject/{object}", method = RequestMethod.GET)
 	@ResponseBody
 	String getAll(@PathVariable("object") String objectName) {
 		return getWindow(objectName, -1, -1);
 	}
 	
-	@RequestMapping(value = "/getAll/{object}/{limit}/{offset}", method = RequestMethod.GET)
+	@RequestMapping(value = "/getObject/{object}/{limit}/{offset}", method = RequestMethod.GET)
 	@ResponseBody
 	String getWindow(@PathVariable("object") String objectName, @PathVariable("limit") int limit, @PathVariable("offset") int offset) {
 		try {
 			DataSet dataset = new DataSet();
+			dataset.put("SF_DATASET_TYPE", SalesforceProcessor.DatasetType.OBJECT);
 			dataset.setName(objectName);
 			List<RawData> data = crmDatasourceManager.getObjectsData(ds, dataset, limit, offset);
 			StringBuilder sb = new StringBuilder();
 			data.stream().forEach(row -> {
-				sb.append("<p>").append(ObjectHelper.print(row)).append("</p>");
+				sb.append("<p>").append(SalesforceObjectHelper.print(row)).append("</p>");
+			});
+			return sb.toString();
+		} catch (Exception e) {
+			e.printStackTrace();
+			return e.getMessage();
+		}
+	}
+	
+	@RequestMapping(value = "/getReport/{reportId}", method = RequestMethod.GET)
+	@ResponseBody
+	String getReportData(@PathVariable("reportId") String reportId) {
+		try {
+			DataSet dataset = new DataSet();
+			dataset.put("SF_DATASET_TYPE", SalesforceProcessor.DatasetType.REPORT);
+			dataset.put("SF_REPORT_ID", reportId);
+			List<RawData> data = crmDatasourceManager.getObjectsData(ds, dataset, 0, 0);
+			StringBuilder sb = new StringBuilder();
+			data.stream().forEach(row -> {
+				sb.append("<p>").append(SalesforceObjectHelper.print(row)).append("</p>");
+			});
+			return sb.toString();
+		} catch (Exception e) {
+			e.printStackTrace();
+			return e.getMessage();
+		}
+	}
+	
+	@RequestMapping(value = "/getAllUnsupported", method = RequestMethod.GET)
+	@ResponseBody
+	String getAllUnsupported() {
+		try {
+			List<String> objNames = ((CamelDatasourceManagerImpl) crmDatasourceManager).getUnsupportedObjects(ds);
+			StringBuilder sb = new StringBuilder();
+			objNames.stream().forEach(row -> {
+				sb.append("<p>").append(SalesforceObjectHelper.print(row)).append("</p>");
 			});
 			return sb.toString();
 		} catch (Exception e) {

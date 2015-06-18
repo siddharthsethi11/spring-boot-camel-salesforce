@@ -42,7 +42,7 @@
 		<appender-ref ref="FILE" />
 		<appender-ref ref="STDOUT" />
 	</logger>
-	<logger name="com.hrboss" level="DEBUG" additivity="false">
+	<logger name="com.hrboss" level="INFO" additivity="false">
 		<appender-ref ref="FILE" />
 		<appender-ref ref="STDOUT" />
 	</logger>

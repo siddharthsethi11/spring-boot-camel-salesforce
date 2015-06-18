@@ -8,6 +8,9 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.apache.camel.CamelExecutionException;
@@ -31,7 +34,7 @@ import org.springframework.util.StringUtils;
 
 import com.hrboss.integration.camel.dto.QueryRecords;
 import com.hrboss.integration.camel.dto.SalesforceCredentials;
-import com.hrboss.integration.helper.ObjectHelper;
+import com.hrboss.integration.helper.SalesforceObjectHelper;
 
 /**
  * Main processor for the Salesforce integration.
@@ -46,7 +49,12 @@ public class SalesforceProcessor {
 	public static final String HEADER_CREDENTIALS = "credentials";
 	public static final int CONNECTION_TIMEOUT = 600_000;
 	public static final int RESPONSE_TIMEOUT = 600_000;
-	
+	public enum DatasetType {
+		OBJECT, REPORT;
+	}
+	public enum ReportType {
+		TABULAR, SUMMARY, MATRIX, JOINED;
+	}
 	/*
 	 * Salesforce REST API endpoints
 	 */
@@ -67,6 +75,12 @@ public class SalesforceProcessor {
 	public static final String FROM_URI_CHECK_BATCH_STATUS = "bulkGetBatch";
 	public static final String FROM_URI_GET_BATCH_RESULTS = "bulkGetBatchResults";
 	public static final String FROM_URI_GET_BATCH_DATA = "bulkGetBatchData";
+	/*
+	 * Salesforce Report API
+	 */
+	public static final String FROM_URI_LIST_REPORTS = "listReports";
+	public static final String FROM_URI_DESCRIBE_REPORT = "describeReport";
+	public static final String FROM_URI_GET_REPORT_DATA = "getReportData";
 	
 	@Autowired
 	ProducerTemplate template;
@@ -291,7 +305,7 @@ public class SalesforceProcessor {
         jobInfo.setContentType(ContentType.XML);
         jobInfo.setObject(objectName);
         jobInfo = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_CREATE_JOB, jobInfo, headers, JobInfo.class);
-        LOG.debug("Import job created: " + ObjectHelper.print(jobInfo));
+        LOG.debug("Import job created: " + SalesforceObjectHelper.print(jobInfo));
 		/*
 		 * Create batch
 		 */
@@ -308,7 +322,7 @@ public class SalesforceProcessor {
             Thread.sleep(5000);
         	batchInfo = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_CHECK_BATCH_STATUS, batchInfo, headers, BatchInfo.class);
         }
-        LOG.debug("Batch completed : " + ObjectHelper.print(batchInfo));
+        LOG.debug("Batch completed : " + SalesforceObjectHelper.print(batchInfo));
 		/*
 		 * Get batch result
 		 */
@@ -321,7 +335,7 @@ public class SalesforceProcessor {
         for (String resultId : resultIds) {
         	headers.put("batchId", batchInfo.getId());
         	long duration = System.currentTimeMillis();
-        	jsonObjs =  ObjectHelper.readXmlStreamToJson(template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_BATCH_DATA, resultId, headers, InputStream.class));
+        	jsonObjs =  SalesforceObjectHelper.readXmlStreamCollection(template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_BATCH_DATA, resultId, headers, InputStream.class));
         	duration = System.currentTimeMillis() - duration;
         	LOG.debug("Streaming data for resultset {" + resultId + "} takes : " + (duration/1000) + " seconds");
             rowCount += jsonObjs.size();
@@ -332,9 +346,64 @@ public class SalesforceProcessor {
          * Close job
          */
         jobInfo = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_CLOSE_JOB, jobInfo, headers, JobInfo.class);
-        LOG.debug("Import job completed : " + ObjectHelper.print(jobInfo));
+        LOG.debug("Import job completed : " + SalesforceObjectHelper.print(jobInfo));
 		return tobeimported;
 	}
+	
+	@SuppressWarnings("unchecked")
+	public Map<String, String> getReportTypes(SalesforceCredentials creds, String reportName) throws Exception {
+		List<Map<String, Object>> reports =  (List<Map<String, Object>>) template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_LIST_REPORTS, (Object) null, 
+				HEADER_CREDENTIALS, creds);
+		debug(reports);
+		return reports.stream()
+				.filter(map -> reportName == null || reportName.equals(map.get("name")))
+				.collect(Collectors.<Map<String, Object>, String, String>toMap(p -> (String) p.get("id"), p -> (String) p.get("name")));
+	}
+	
+	public Map<String, Object> describeReport(SalesforceCredentials creds, String reportId) throws Exception {
+		Map<String, Object> reportMetadata =  template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_DESCRIBE_REPORT, 
+				reportId, HEADER_CREDENTIALS, creds, Map.class);
+		debug(reportMetadata);
+		return reportMetadata;
+	}
+	
+	public InputStream getReportData(SalesforceCredentials creds, String reportId) throws Exception {
+		return template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_GET_REPORT_DATA, 
+				reportId, HEADER_CREDENTIALS, creds, InputStream.class);
+	}
+	
+	public List<String> getBulkQueryUnsupportedObjects(SalesforceCredentials creds) throws Exception {
+		
+		GlobalObjects globalObjects = template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_GET_GLOBAL_OBJECTS, (Object) null, 
+				HEADER_CREDENTIALS, creds, GlobalObjects.class);
+		Function<String, CompletableFuture<String>> funcCreateJob = objectName -> CompletableFuture.supplyAsync(() -> {
+			Map<String, Object> headers = new HashMap<String, Object>(3){
+				{
+					put(HEADER_CREDENTIALS, creds);
+					put("objectName", objectName);
+					put("fields", "id");
+				}
+			};
+			JobInfo jobInfo = new JobInfo();
+	        jobInfo.setOperation(OperationEnum.QUERY);
+	        jobInfo.setContentType(ContentType.XML);
+	        jobInfo.setObject(objectName);
+	        jobInfo = template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_CREATE_JOB, jobInfo, headers, JobInfo.class);
+	        return jobInfo.getObject();
+		}, Executors.newFixedThreadPool(50));
+		return globalObjects.getSobjects().stream()
+			.map(sObj -> {
+				try {
+					funcCreateJob.apply(sObj.getName()).get();
+					return null;
+				} catch (Exception e) {
+					return sObj.getName();
+				}
+			})
+			.filter(objectName -> objectName != null)
+			.collect(Collectors.toList());
+	}
+	
 	
 	/**
 	 * For debugging purpose only. Print out the pretty JSON data of the object
@@ -344,7 +413,7 @@ public class SalesforceProcessor {
 	 */
 	private void debug(Object obj) {
 		if (LOG.isDebugEnabled()) {
-			LOG.debug(ObjectHelper.print(obj));
+			LOG.debug(SalesforceObjectHelper.print(obj));
 		}
 	}
 }

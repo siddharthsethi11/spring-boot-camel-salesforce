@@ -6,6 +6,7 @@ import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_CLOSE_JO
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_COUNT_OBJECTS;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_CREATE_BATCH;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_CREATE_JOB;
+import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_DESCRIBE_REPORT;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_FAILED_LOGIN;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_BATCH_DATA;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_BATCH_RESULTS;
@@ -13,7 +14,9 @@ import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_DESC
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_GLOBAL_OBJECTS;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_OBJECT;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_OBJECT_WINDOW;
+import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_REPORT_DATA;
 import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_GET_VERSIONS;
+import static com.hrboss.integration.camel.SalesforceProcessor.FROM_URI_LIST_REPORTS;
 import static com.hrboss.integration.camel.SalesforceProcessor.HEADER_CREDENTIALS;
 import static com.hrboss.integration.camel.SalesforceProcessor.RESPONSE_TIMEOUT;
 
@@ -189,6 +192,12 @@ public class DynamicSalesforceComponentRouter {
 						+ "jobId=" + properties.get("jobId")
 						+ "&batchId=" + properties.get("batchId");
 				
+			} else if (toEndpoint.endsWith(FROM_URI_LIST_REPORTS)) {
+				return componentName(creds) + ":getSReports";
+			} else if (toEndpoint.endsWith(FROM_URI_DESCRIBE_REPORT)) {
+				return componentName(creds) + ":describeSReport";
+			} else if (toEndpoint.endsWith(FROM_URI_GET_REPORT_DATA)) {
+				return componentName(creds) + ":getSReportData";
 			} else {
 				/*
 				 * NOTE: this is the exit condition
@@ -302,6 +311,34 @@ public class DynamicSalesforceComponentRouter {
 		if (body instanceof String) {
 			properties.put("jobId", jobId);
 			properties.put("batchId", batchId);
+			return slipOnce(creds, properties, (String) body);
+		} else {
+			return null;
+		}
+	}
+	
+	@Consume(uri = FROM_COMPONENT + FROM_URI_LIST_REPORTS)
+	@DynamicRouter
+	public String listReports(
+			@Header(HEADER_CREDENTIALS) SalesforceCredentials creds,
+			@Properties Map<String, Object> properties) {
+		return slipOnce(creds, properties, null);
+	}
+
+	@Consume(uri = FROM_COMPONENT + FROM_URI_DESCRIBE_REPORT)
+	@DynamicRouter
+	public String describeReport(
+			@Header(HEADER_CREDENTIALS) SalesforceCredentials creds,
+			@Properties Map<String, Object> properties, @Body String reportId) {
+		return slipOnce(creds, properties, reportId);
+	}
+
+	@Consume(uri = FROM_COMPONENT + FROM_URI_GET_REPORT_DATA)
+	@DynamicRouter
+	public String getReportData(
+			@Header(HEADER_CREDENTIALS) SalesforceCredentials creds,
+			@Properties Map<String, Object> properties, @Body Object body) {
+		if (body instanceof String) {
 			return slipOnce(creds, properties, (String) body);
 		} else {
 			return null;
