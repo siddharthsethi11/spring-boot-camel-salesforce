@@ -1,18 +1,16 @@
 package com.github.deeprot.service.impl;
 
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.apache.camel.CamelExecutionException;
+import org.apache.camel.component.salesforce.api.SalesforceException;
+import org.apache.camel.component.salesforce.api.dto.RestError;
 import org.apache.camel.component.salesforce.api.dto.SObjectDescription;
+import org.apache.camel.component.salesforce.api.dto.SObjectField;
 import org.apache.camel.component.salesforce.api.dto.Version;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,7 +39,7 @@ import com.mongodb.BasicDBObject;
 
 /**
  * Concrete implementation of
- * {@link com.hrboss.cxoboss.datasource.crm.CrmDatasourceManager} using <a
+ * {@link com.github.deeprot.service.CrmDatasourceManager} using <a
  * href="http://camel.apache.org/">Camel Integration framework</a>. <br/>
  * Current CRM system supported:
  * <ul>
@@ -61,19 +59,25 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 
 	private static final Logger LOG = LoggerFactory.getLogger(CamelDatasourceManagerImpl.class);
 	
-	private static final int THREAD_POOL_SIZE = 100;
-	
 	@Autowired
 	SalesforceProcessor salesforceProcessor;
 	
 	@Override
-	protected boolean verifyCredentials(DataSource dataSource) throws Exception {
+	public boolean testConnection(DataSource dataSource) throws Exception {
 		switch (DatasourceType.valueOf(dataSource.getType())) {
 		case SALESFORCE:
-			Collection<Version> versions = salesforceProcessor.getVersions(SalesforceLoginConfigHelper.getCredentials(dataSource));
-			return (versions != null && versions.size() > 0);
+			try {
+				Collection<Version> versions = salesforceProcessor.getVersions(SalesforceLoginConfigHelper.getCredentials(dataSource));
+				if (versions != null && versions.size() > 0) {
+					return true;
+				} else {
+					throw new Exception("ERROR_DATASOURCE_INCORRECT_LOGINS");
+				}
+			} catch (Exception e) {
+				throw new Exception("ERROR_DATASOURCE_INCORRECT_LOGINS");
+			}
 		default:
-			return false;
+			throw new Exception("ERROR_DATASOURCE_UNSUPPORTED");
 		}
 	}
 
@@ -85,70 +89,72 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 	public List<DataSet> buildObjectsMetadata(DataSource dataSource,
 			String objectName) throws Exception {
 		switch (DatasourceType.valueOf(dataSource.getType())) {
-		case SALESFORCE:
-			SalesforceCredentials creds = SalesforceLoginConfigHelper.getCredentials(dataSource);
-			try {
-				ExecutorService executor = Executors.newCachedThreadPool();
-				final DataSet template = new DataSet();
-				// copy information from DataSource
-				template.setDataSourceId(dataSource.getId());
-				template.setContainerId(dataSource.getContainerId());
-				template.setOwnerId(dataSource.getOwner());
-				template.setRoles(dataSource.getRoles());
+			case DATABASE:
+				break;
+			case FILE:
+				break;
+			case SALESFORCE:
+				SalesforceCredentials creds = SalesforceLoginConfigHelper.getCredentials(dataSource);
+				try {
+					ExecutorService executor = Executors.newCachedThreadPool();
+					final DataSet template = new DataSet();
+					// copy information from DataSource
+					template.setDataSourceId(dataSource.getId());
+					template.setContainerId(dataSource.getContainerId());
+					template.setOwnerId(dataSource.getOwner());
+					template.setRoles(dataSource.getRoles());
 
-				long duration = System.currentTimeMillis();
-				CompletableFuture<List<DataSet>> objectDSFuture = CompletableFuture.supplyAsync(() -> salesforceProcessor.getObjectTypes(creds, objectName).stream()
-						.filter(sObj -> sObj.isQueryable() && sObj.isRetrieveable())
-						.map(sObj -> {
-							DataSet dataset = (DataSet) template.clone();
-							dataset.put(DSFIELD_SF_DSTYPE, SalesforceProcessor.DatasetType.OBJECT.toString());
-							dataset.setName(sObj.getName());
-							return dataset;
-						})
-						.collect(Collectors.toList()), executor);
-				CompletableFuture<List<DataSet>> reportDSFuture = CompletableFuture.supplyAsync(() -> salesforceProcessor.getReportTypes(creds, objectName).stream()
-						.map(map -> {
-							DataSet dataset = (DataSet) template.clone();
-							dataset.put(DSFIELD_SF_DSTYPE, SalesforceProcessor.DatasetType.REPORT.toString());
-							dataset.put(DSFIELD_SF_REPORTID, map.get("Id"));
-							dataset.setName((String)map.get("Name"));
-							return dataset;
-						})
-						.collect(Collectors.toList()), executor);
-				CompletableFuture.allOf(objectDSFuture, reportDSFuture).join();
-				LOG.info("Getting Salesforce object & report types completely takes {} m-seconds.", System.currentTimeMillis() - duration);
-				
-				List<CompletableFuture<DataSet>> objectMetaDSFutures = objectDSFuture.get().stream()
-						.map(dataset -> CompletableFuture.supplyAsync(() -> getObjectMetadata(creds, dataset), executor))
-						.map(dataSetFuture -> (CompletableFuture<DataSet>) dataSetFuture.thenApply(dataset -> countObjectRecordset(creds, dataset)))
-						.collect(Collectors.<CompletableFuture<DataSet>>toList());
-				List<CompletableFuture<DataSet>> reportMetaDSFutures = reportDSFuture.get().stream()
-						.map(dataset -> CompletableFuture.supplyAsync(() -> getReportMetadata(creds, dataset), executor))
-						.collect(Collectors.<CompletableFuture<DataSet>>toList());
-				// combine two list
-				objectMetaDSFutures.addAll(reportMetaDSFutures);
-				// no new tasks will be accepted
-				executor.shutdown();
-				// blocks until all tasks have completed execution
-				executor.awaitTermination(3, TimeUnit.SECONDS);
-				List<DataSet> objectMetaList = expectAllDone(objectMetaDSFutures).get().parallelStream()
-					.filter(dataset -> dataset.getRowCount() != 0)
-					.collect(Collectors.toList());
-				
-				LOG.info("Getting Salesforce metadata for "
-						+ (objectName == null ? "ALL objects and reports" : objectName) + " takes {"
-						+ (System.currentTimeMillis() - duration) + "} mili-seconds.");
-				return objectMetaList;
-			} catch (Exception e) {
-				throwRootCause(e);
-			}
-		default:
-			return null;
+					long duration = System.currentTimeMillis();
+					CompletableFuture<List<DataSet>> objectDSFuture = CompletableFuture.supplyAsync(() -> salesforceProcessor.getObjectTypes(creds, objectName).stream()
+							.filter(sObj -> sObj.isQueryable() && sObj.isRetrieveable())
+							.map(sObj -> {
+								DataSet dataset = (DataSet) template.clone();
+								dataset.put(DSFIELD_SF_DSTYPE, SalesforceProcessor.DatasetType.OBJECT.toString());
+								dataset.setName(sObj.getName());
+								return dataset;
+							})
+							.collect(Collectors.toList()), executor);
+					CompletableFuture<List<DataSet>> reportDSFuture = CompletableFuture.supplyAsync(() -> salesforceProcessor.getReportTypes(creds, objectName).stream()
+							.map(map -> {
+								DataSet dataset = (DataSet) template.clone();
+								dataset.put(DSFIELD_SF_DSTYPE, SalesforceProcessor.DatasetType.REPORT.toString());
+								dataset.put(DSFIELD_SF_REPORTID, map.get("Id"));
+								dataset.setName((String) map.get("Name"));
+								return dataset;
+							})
+							.collect(Collectors.toList()), executor);
+					CompletableFuture.allOf(objectDSFuture, reportDSFuture).join();
+					LOG.info("Getting Salesforce object & report types completely takes {} m-seconds.", System.currentTimeMillis() - duration);
+
+
+					List<CompletableFuture<DataSet>> objectMetaDSFutures = objectDSFuture.get().stream()
+							.map(dataset -> CompletableFuture.supplyAsync(() -> getObjectMetadata(creds, dataset), executor))
+							.map(dataSetFuture -> (CompletableFuture<DataSet>) dataSetFuture.thenApply(dataset -> countObjectRecordset(creds, dataset)))
+							.collect(Collectors.<CompletableFuture<DataSet>>toList());
+					List<CompletableFuture<DataSet>> reportMetaDSFutures = reportDSFuture.get().stream()
+							.map(dataset -> CompletableFuture.supplyAsync(() -> getReportMetadata(creds, dataset), Executors.newFixedThreadPool(20)))
+							.collect(Collectors.<CompletableFuture<DataSet>>toList());
+					objectMetaDSFutures.addAll(reportMetaDSFutures);
+					executor.shutdown();
+					executor.awaitTermination(3, TimeUnit.SECONDS);
+					List<DataSet> objectMetaList = expectAllDone(objectMetaDSFutures).get().parallelStream()
+						.filter(dataset -> dataset.getRowCount() != 0)
+						.collect(Collectors.toList());
+
+					LOG.info("Getting Salesforce metadata for "
+							+ (objectName == null ? "ALL objects and reports" : objectName) + " takes {"
+							+ (System.currentTimeMillis() - duration) + "} mili-seconds.");
+					return objectMetaList;
+				} catch (Exception e) {
+					SalesforceObjectHelper.throwRootCause(e);
+				}
+				break;
 		}
+		return null;
 	}
 	
 	@Deprecated
-	public List<DataSet> buildSalesforceObjectsMetadata(final DataSet template, final SalesforceCredentials creds, final String objectName, 
+	public List<DataSet> buildSalesforceObjectsMetadata(final DataSet template, final SalesforceCredentials creds, final String objectName,
 			ExecutorService executor, boolean withRowCount) throws Exception {
 		try {
 			long duration = System.currentTimeMillis();
@@ -164,7 +170,7 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 			LOG.info("Getting all Salesforce object types completely takes {} m-seconds.", System.currentTimeMillis() - duration);
 			
 			duration = System.currentTimeMillis();
-			List<CompletableFuture<DataSet>> objectDSFutures = null;
+			List<CompletableFuture<DataSet>> objectDSFutures;
 			if (withRowCount) {
 				objectDSFutures = objectDS.stream()
 					.map(dataset -> CompletableFuture.supplyAsync(() -> getObjectMetadata(creds, dataset), executor))
@@ -175,9 +181,7 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 					.map(dataset -> CompletableFuture.supplyAsync(() -> getObjectMetadata(creds, dataset), executor))
 					.collect(Collectors.<CompletableFuture<DataSet>>toList());
 			}
-			// no new tasks will be accepted
 			executor.shutdown();
-			// blocks until all tasks have completed execution
 			executor.awaitTermination(3, TimeUnit.SECONDS);
 			List<DataSet> objectMetaDS = expectAllDone(objectDSFutures).get().parallelStream()
 				.collect(Collectors.toList());
@@ -187,14 +191,13 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 					+ (System.currentTimeMillis() - duration) + "} mili-seconds.");
 			return objectMetaDS;
 		} catch (Exception e) {
-			throwRootCause(e);
+			SalesforceObjectHelper.throwRootCause(e);
 		}
 		return null;
 	}
 
 	@Deprecated
-	public List<DataSet> buildSalesforceReportsMetadata(final DataSet template, final SalesforceCredentials creds, final String objectName, 
-		ExecutorService executor) throws Exception {
+	public List<DataSet> buildSalesforceReportsMetadata(final DataSet template, final SalesforceCredentials creds, final String objectName, ExecutorService executor) throws Exception {
 		try {
 			long duration = System.currentTimeMillis();
 			List<DataSet> reportDS = salesforceProcessor.getReportTypes(creds, objectName).stream()
@@ -207,16 +210,13 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 					})
 					.collect(Collectors.toList());
 			LOG.info("Getting all Salesforce report types completely takes {} m-seconds.", System.currentTimeMillis() - duration);
-			List<CompletableFuture<DataSet>> reportMetaDSFutures = reportDS.stream()
-					.map(dataset -> CompletableFuture.supplyAsync(() -> getReportMetadata(creds, dataset), executor))
-					.collect(Collectors.<CompletableFuture<DataSet>>toList());
-			// no new tasks will be accepted
-			executor.shutdown();
-			// blocks until all tasks have completed execution
-			executor.awaitTermination(3, TimeUnit.SECONDS);
-			List<DataSet> reportMetaList = expectAllDone(reportMetaDSFutures).get().parallelStream()
-				.collect(Collectors.toList());
-			/*List<DataSet> reportMetaList = new CopyOnWriteArrayList<DataSet>();
+			//List<CompletableFuture<DataSet>> reportMetaDSFutures = reportDS.stream()
+			//		.map(dataset -> CompletableFuture.supplyAsync(() -> getReportMetadata(creds, dataset), executor))
+			//		.collect(Collectors.<CompletableFuture<DataSet>>toList());
+			//executor.shutdown();
+			//executor.awaitTermination(3, TimeUnit.SECONDS);
+			//List<DataSet> reportMetaList = expectAllDone(reportMetaDSFutures).get().parallelStream().collect(Collectors.toList());
+			List<DataSet> reportMetaList = new CopyOnWriteArrayList<DataSet>();
 			List<DataSet> failedList = new CopyOnWriteArrayList<DataSet>();
 			int retry = 1;
 			do {
@@ -225,21 +225,21 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 				reportDS.clear();
 				reportDS.addAll(failedList);
 				retry --;
-			} while (retry >= 0 && failedList.size() > 0);*/
+			} while (retry >= 0 && failedList.size() > 0);
 
 			LOG.info("Getting Salesforce metadata for {"
 					+ (objectName == null ? "ALL reports" : objectName) + "} takes {"
 					+ (System.currentTimeMillis() - duration) + "} mili-seconds.");
 			return reportMetaList;
 		} catch (Exception e) {
-			throwRootCause(e);
+			SalesforceObjectHelper.throwRootCause(e);
 		}
 		return null;
-	}	
-	
+	}
+
 	@Deprecated
 	private List<DataSet> batchGetReportMetadata(List<DataSet> sourceList, SalesforceCredentials creds, ExecutorService executor, List<DataSet> composedList) {
-		List<DataSet> failedList = new ArrayList<DataSet>();
+		List<DataSet> failedList = new ArrayList<>();
 		CompletableFuture[] reportDSFutures = sourceList.stream()
 				.map(dataset -> CompletableFuture.supplyAsync(() -> {
 					DataSet newDS = null;
@@ -249,7 +249,7 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 					} catch (Exception e) {
 						failedList.add(dataset);
 						try {
-							throwRootCause(e);
+							SalesforceObjectHelper.throwRootCause(e);
 						} catch (Exception rootcause) {
 							LOG.error(String.format("Failed getting metadata for report {%s}", dataset.getName()), rootcause);
 						}
@@ -345,10 +345,10 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 		
 		long duration = System.currentTimeMillis();
 		final BasicDBObject columnMetadataList = new BasicDBObject();
-		DocumentContext document = null;
-		Map<String, ?> reportMetadata = null;
+		DocumentContext document;
+		Map<String, ?> reportMetadata;
 		try {
-			reportMetadata = salesforceProcessor.describeReport(creds, (String) dataSet.get(DSFIELD_SF_REPORTID));
+			reportMetadata = salesforceProcessor.describeReportAsync(creds, (String) dataSet.get(DSFIELD_SF_REPORTID));
 			Configuration conf = Configuration.defaultConfiguration();
 			conf.addOptions(Option.DEFAULT_PATH_LEAF_TO_NULL);
 			document = JsonPath.using(conf).parse(reportMetadata);
@@ -368,10 +368,9 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 	 */
 	private <T> CompletableFuture<List<T>> expectAllDone(List<CompletableFuture<T>> futures) {
 	    CompletableFuture<Void> allDoneFuture = CompletableFuture.allOf(futures.toArray(new CompletableFuture[futures.size()]));
-	    return allDoneFuture.thenApply(v -> futures.stream().
-	                    map(future -> future.join()).
-	                    collect(Collectors.<T>toList())
-	    );
+	    return allDoneFuture.thenApply(
+				v -> futures.stream().map(CompletableFuture::join).collect(Collectors.<T>toList())
+		);
 	}
 	
 
@@ -402,22 +401,22 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 					case REPORT:
 						Assert.notNull(dataSet.get(DSFIELD_SF_REPORTID), 
 								String.format("Dataset does not contain mandatory custom field {%s}", DSFIELD_SF_REPORTID));
-						InputStream reportDataStream = salesforceProcessor.getReportData(creds, (String) dataSet.get(DSFIELD_SF_REPORTID) ,null);
+						InputStream reportDataStream = salesforceProcessor.getReportData(creds, (String) dataSet.get(DSFIELD_SF_REPORTID), true);
 						sfDataset = SalesforceObjectHelper.readSalesforceReportDataStreamToMongoObject(reportDataStream);
 						break;
 					default:
 						SObjectDescription oDesc = salesforceProcessor.describeObject(creds, objectName);
-						List<String> fields = null;
-						QueryRecords<?> resultObj = null;
+						List<String> fields;
+						QueryRecords<?> resultObj;
 						if (offset > 0) {
 							fields = oDesc.getFields().stream()
-									.map(f -> f.getName()).collect(Collectors.toList());
+									.map(SObjectField::getName).collect(Collectors.toList());
 							resultObj = salesforceProcessor.getObjectWindows(creds, objectName, fields, limit, offset);
 						} else {
 							fields = oDesc.getFields().stream()
 									// FUNCTIONALITY_NOT_ENABLED: Selecting compound data not supported in Bulk Query
 									.filter(f -> !f.getSoapType().startsWith("urn:"))
-									.map(f -> f.getName()).collect(Collectors.toList());
+									.map(SObjectField::getName).collect(Collectors.toList());
 							resultObj = salesforceProcessor.bulkQueryObjects(creds, objectName, fields, limit);
 						}
 						if (resultObj != null && resultObj.getTotalSize() > 0) {
@@ -438,27 +437,9 @@ public class CamelDatasourceManagerImpl extends AbstractDatasourceManagerCamelIm
 				LOG.info("Getting Salesforce data for dataset {" + objectName
 						+ "} takes {" + duration + "} mili-seconds.");
 			} catch (Exception e) {
-				throwRootCause(e);
+				SalesforceObjectHelper.throwRootCause(e);
 			}
 		}
 		return resultSet;
-	}
-	
-	/**
-	 * Throw the root cause in the exception stack
-	 * 
-	 * @param e
-	 * @throws Exception
-	 */
-	private void throwRootCause(Exception e) throws Exception {
-		if (e instanceof CamelExecutionException) {
-			Throwable t = ((CamelExecutionException) e).getCause();
-			while (t.getCause() != null) {
-				t = t.getCause();
-			}
-			throw new Exception(t);
-		} else {
-			throw e;
-		}
 	}
 }

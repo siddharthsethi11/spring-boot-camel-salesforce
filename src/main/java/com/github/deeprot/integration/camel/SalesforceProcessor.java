@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.apache.camel.CamelExecutionException;
@@ -53,8 +54,8 @@ public class SalesforceProcessor {
 			"LeadStatus", "LookedUpFromActivity", "Name", "NoteAndAttachment",
 			"OpenActivity", "OwnedContentDocument", "PartnerRole",
 			"ProcessInstanceHistory", "RecentlyViewed", "SolutionStatus",
-			"TaskPriority", "TaskStatus", "UndecidedEventRelation",
-			"UserRecordAccess");
+			"TaskPriority", "TaskStatus", "UndecidedEventRelation", "UserRecordAccess",
+			"ContentDocumentLink", "IdeaComment", "CollaborationGroupRecord", "Vote");
 	public static final String HEADER_CREDENTIALS = "credentials";
 	public static final int CONNECTION_TIMEOUT = 900_000; // 15 minutes
 	public static final int RESPONSE_TIMEOUT = 900_000; // 15 minutes
@@ -90,6 +91,8 @@ public class SalesforceProcessor {
 	 * Salesforce Report API
 	 */
 	public static final String FROM_URI_LIST_REPORTS = "listReports";
+	public static final String FROM_URI_DESCRIBE_REPORT = "describeReport";
+	public static final String FROM_URI_GET_REPORT_DATA = "getReportData";	
 	public static final String FROM_URI_CREATE_REPORT_INSTANCE = "createReportInstance";
 	public static final String FROM_URI_GET_INSTANCE_DATA = "getInstanceData";	
 	
@@ -190,7 +193,7 @@ public class SalesforceProcessor {
 	 * 
 	 * @param creds
 	 *            Salesforce credentials
-	 * @param sObj
+	 * @param objectName
 	 *            the SObject to be counted
 	 * @return the number of instances of the specified SObject
 	 * @throws Exception
@@ -430,6 +433,13 @@ public class SalesforceProcessor {
 	 */	
 	@SuppressWarnings("unchecked")
 	public Map<String, ?> describeReport(SalesforceCredentials creds, String reportId) throws Exception {
+		Map<String, ?> reportMetadata =  template.requestBodyAndHeader(FROM_COMPONENT + FROM_URI_DESCRIBE_REPORT,
+				reportId, HEADER_CREDENTIALS, creds, Map.class);
+		debug(reportMetadata);
+		return reportMetadata;
+	}
+
+	public Map<String, ?> describeReportAsync(SalesforceCredentials creds, String reportId) throws Exception {
 		final Map<String, Object> headers = new HashMap<String, Object>(3){
 			{
 				put(HEADER_CREDENTIALS, creds);
@@ -440,21 +450,24 @@ public class SalesforceProcessor {
 		Map<String, ?> instanceList = (Map<String, ?>) template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_CREATE_REPORT_INSTANCE, reportId, headers);
 		Assert.notNull(instanceList, "Report instance list must not be empty.");
 		String instanceId = (String) instanceList.get("id");
-		int retry = 3;
+		int attempt = 1;
 		Map<String, ?> metadata = null;
 		do {
-			metadata = SalesforceObjectHelper.readJsonFromStream(template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_INSTANCE_DATA, instanceId, headers, InputStream.class));
+			LOG.debug("Getting metadata for report {}, attempt #{}...", reportId, attempt);
+			metadata = SalesforceObjectHelper.readJsonFromStream(
+					template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_INSTANCE_DATA, instanceId, headers, InputStream.class));
 			if (metadata != null && metadata.containsKey("factMap") && metadata.containsKey("reportExtendedMetadata")) {
-				retry = 0; // immediate exit
+				attempt = 4; // immediate exit
 			} else {
 				Thread.sleep(500);
-				retry--;
+				attempt++;
 			}
-		} while (retry > 0);
+		} while (attempt <= 3);
 		debug(metadata);
 		return metadata;
 	}
-
+	
+	
 	/**
 	 * Trigger the Salesforce Reporting API <a href=
 	 * "https://developer.salesforce.com/docs/atlas.en-us.api_analytics.meta/api_analytics/sforce_analytics_rest_api_getreportrundata.htm"
@@ -464,20 +477,53 @@ public class SalesforceProcessor {
 	 *            Salesforce credentials
 	 * @param reportId
 	 *            the ID of the report to get
-	 * @param instanceId
-	 *            the ID of the instance containing the report data
 	 * @return an input stream containing the JSON structure of the report data
 	 * @throws Exception
 	 */		
-	public InputStream getReportData(SalesforceCredentials creds, String reportId, String instanceId) throws Exception {
-		Map<String, Object> headers = new HashMap<String, Object>(2){
+
+	public InputStream getReportData(SalesforceCredentials creds, String reportId, boolean includeDetails) throws Exception {
+		final Map<String, Object> headers = new HashMap<String, Object>(2){
 			{
 				put(HEADER_CREDENTIALS, creds);
+				put("includeDetails", includeDetails);
+			}
+		};
+		return template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_REPORT_DATA,
+				reportId, headers, InputStream.class);
+	}
+
+	@Deprecated
+	public List<Map<String, ?>> getReportDataAsync(SalesforceCredentials creds, String reportId) throws Exception {
+		final Map<String, Object> headers = new HashMap<String, Object>(3){
+			{
+				put(HEADER_CREDENTIALS, creds);
+				put("includeDetails", true);
 				put("reportId", reportId);
 			}
 		};
-		return template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_INSTANCE_DATA, 
-				instanceId, headers, InputStream.class);
+		List<Map<String, ?>> instanceList = (List<Map<String, ?>>) template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_CREATE_REPORT_INSTANCE, reportId, headers);
+		Assert.notEmpty(instanceList, "Report instance list must not be empty.");
+		Function<String, Map<String, ?>> getInstanceDataFunction = (instanceId) -> {
+			int retry = 3;
+			Map<String, ?> metadata = null;
+			do {
+				metadata = SalesforceObjectHelper.readJsonFromStream(template.requestBodyAndHeaders(FROM_COMPONENT + FROM_URI_GET_INSTANCE_DATA, instanceId, headers, InputStream.class));
+				if (metadata != null && metadata.containsKey("factMap") && metadata.containsKey("reportExtendedMetadata")) {
+					retry = 0; // immediate exit
+				} else {
+					try {
+						Thread.sleep(500);
+					} catch (InterruptedException ie) {
+						LOG.warn(ie.getMessage(), ie);
+					}
+					retry--;
+				}
+			} while (retry > 0);
+			return metadata;
+		};
+		
+		return instanceList.stream().map(json -> getInstanceDataFunction.apply((String)json.get("id")))
+				.filter(json -> json == null).collect(Collectors.toList());
 	}
 	
 	

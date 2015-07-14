@@ -120,7 +120,7 @@ public class Front {
     @RequestMapping("/measure/objectsNreports")
     public String scenario03(@RequestParam(required = false, value = "withRowCount", defaultValue = "true") boolean withRowCount) {
 		long duration = System.currentTimeMillis();
-		List<DataSet> metadataList = new ArrayList<DataSet>();
+		List<DataSet> metadataList = new ArrayList<>();
     	try {
     		metadataList = crmMgr.buildObjectsMetadata(DEFAULT_DS, null);
     	} catch (Exception e) {

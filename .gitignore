@@ -2,3 +2,6 @@ target/
 .settings/
 .project
 .classpath
+.idea/
+application*.log
+spring-boot-camel-salesforce.iml

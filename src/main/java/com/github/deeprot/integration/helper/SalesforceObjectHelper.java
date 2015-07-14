@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import org.apache.camel.CamelExecutionException;
+import org.apache.camel.component.salesforce.api.SalesforceException;
 import org.codehaus.jackson.map.DeserializationConfig;
 import org.codehaus.jackson.map.ObjectMapper;
 import org.codehaus.jackson.map.SerializationConfig;
@@ -45,19 +47,23 @@ public class SalesforceObjectHelper {
 	private static final Logger LOG = LoggerFactory.getLogger(SalesforceObjectHelper.class);
 	
 	private static final XmlMapper xmlMapper = new XmlMapper();
-	{
+	static {
 		xmlMapper.configure(DeserializationFeature.ACCEPT_EMPTY_STRING_AS_NULL_OBJECT, true);
 		xmlMapper.setSerializationInclusion(Include.NON_NULL);
 	}
 	private static final ObjectMapper objectMapper = new ObjectMapper();
-	{
+	static {
 		objectMapper.configure(SerializationConfig.Feature.WRITE_DATES_AS_TIMESTAMPS, false);
 		objectMapper.configure(DeserializationConfig.Feature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 		objectMapper.configure(SerializationConfig.Feature.WRITE_NULL_MAP_VALUES,false);
 		objectMapper.configure(SerializationConfig.Feature.INDENT_OUTPUT, false);
 		objectMapper.setSerializationInclusion(Inclusion.NON_NULL);
 	}
-	
+	private static Configuration jsonConfig = Configuration.defaultConfiguration();
+	static {
+		jsonConfig.addOptions(Option.DEFAULT_PATH_LEAF_TO_NULL);
+	}
+
 	/**
 	 * Print object data as JSON string in pretty format
 	 * 
@@ -73,40 +79,30 @@ public class SalesforceObjectHelper {
 			return "Failed to print object: " + e.getMessage();
 		}
 	}
-	
-	/**
-	 * Convert XML stream to a collection of Map objects
-	 * 
-	 * @param inputStream the XML inputstream
-	 * @return a collection of Map objects
-	 */
-	public static Collection<Map<String, Object>> readXmlStreamCollection(InputStream inputStream) {
-		try {
-			List<Map<String, Object>> entries = xmlMapper.readValue(inputStream, List.class);
-			return entries.stream().map(map -> map.entrySet().parallelStream()
-					.map(entry -> {
-						if (entry.getValue() instanceof LinkedHashMap 
-								&& ((LinkedHashMap)entry.getValue()).containsKey("nil")) {
-							entry.setValue("");
-						}
-						return entry;
-					})
-					.collect(Collectors.<Map.Entry<String, Object>, String, Object>toMap(Map.Entry::getKey, Map.Entry::getValue))
-			).collect(Collectors.toList());
-		} catch (Exception e) {
-			LOG.warn("Failed to parse XML input stream", e);
-		} finally {
-			if (inputStream != null) {
-				try {
-					inputStream.close();
-				} catch (Exception ex) {
-					ex.printStackTrace();
-				}
-			}
-		}
-		return null;
-	}
-	
+
+    /**
+     * Convert an input stream to JSON structure
+     *
+     * @param inputStream the JSON-alike input stream
+     * @return the JSON Map object
+     */
+    public static Map<String, ?> readJsonFromStream(InputStream inputStream) {
+        try {
+            return objectMapper.readValue(inputStream, new TypeReference<Map<String, ?>>(){});
+        } catch (Exception e) {
+            LOG.warn("Failed to parse JSON from input stream", e);
+            return null;
+        } finally {
+            if (inputStream != null) {
+                try {
+                    inputStream.close();
+                } catch (Exception ex) {
+                    LOG.error("Failed to close input stream.", ex);
+                }
+            }
+        }
+    }
+
 	/**
 	 * Convert Salesforce XML stream to Mongo basic object
 	 * 
@@ -121,12 +117,10 @@ public class SalesforceObjectHelper {
 		} catch (Exception e) {
 			LOG.warn("Failed to parse XML input stream", e);
 		} finally {
-			if (inputStream != null) {
-				try {
-					inputStream.close();
-				} catch (Exception ex) {
-					ex.printStackTrace();
-				}
+			if (inputStream != null) try {
+				inputStream.close();
+			} catch (Exception ex) {
+				ex.printStackTrace();
 			}
 		}
 		return null;
@@ -142,15 +136,16 @@ public class SalesforceObjectHelper {
 	 */
 	public static int readReportMetadata(DocumentContext document, BasicDBObject fieldList) throws Exception {
 		String reportType = document.read("$.reportMetadata.reportFormat");
+		List<String> reportAggregates = document.read("$['reportMetadata']['aggregates'][*]");
 		int count = 0;
 		switch (ReportType.valueOf(reportType)) {
 			case TABULAR:
 			case SUMMARY:
 			case MATRIX:
-				try {
+				if (reportAggregates.contains("RowCount")) {
 					count = document.read("$['factMap']['T!T']['aggregates'][(@.length-1)]['value']");
-				} catch (Exception e) {
-					LOG.warn(String.format("The report {%s} doesn't support row count.", document.read("$.reportMetadata.name")), e);
+				} else {
+					LOG.warn("The report {} doesn't support row count.", (String) document.read("$.reportMetadata.name"));
 					count = -1;
 				}
 				Map<String, Map<String, Object>> columnInfos = document.read("$.reportExtendedMetadata.detailColumnInfo");
@@ -167,38 +162,18 @@ public class SalesforceObjectHelper {
 		}
 		return count;
 	}
-	
-	public static Map<String, ?> readJsonFromStream(InputStream inputStream) {
-		try {
-			return objectMapper.readValue(inputStream, new TypeReference<Map<String, ?>>(){});
-		} catch (Exception e) {
-			LOG.warn("Failed to parse JSON from input stream", e);
-			return null;
-		} finally {
-			if (inputStream != null) {
-				try {
-					inputStream.close();
-				} catch (Exception ex) {
-					LOG.error("Failed to close input stream.", ex);
-				}
-			}
-		}
-	}
-	
+
 	/**
 	 * Convert Salesforce JSON report to Mongo basic object
 	 * 
 	 * @param inputStream the JSON inputstream
-	 * @param metadata the metadata map
 	 * @return the collection of basic DB object
 	 */
 	public static Collection<BasicDBObject> readSalesforceReportDataStreamToMongoObject(InputStream inputStream) {
-		Configuration conf = Configuration.defaultConfiguration();
-		conf.addOptions(Option.DEFAULT_PATH_LEAF_TO_NULL);
-		DocumentContext document = null;
+		DocumentContext document;
 		try {
 			Map<String, ?> jsonData = readJsonFromStream(inputStream);
-			document = JsonPath.using(conf).parse(jsonData);
+			document = JsonPath.using(jsonConfig).parse(jsonData);
 			String reportType = document.read("$.reportMetadata.reportFormat");
 			switch (ReportType.valueOf(reportType)) {
 				case TABULAR:
@@ -229,7 +204,7 @@ public class SalesforceObjectHelper {
 		List<List<Map<String, Object>>> jsonRows = document.read("$['factMap'][*]['rows'][*]['dataCells']");
 		List<String> columnList = document.read("$.reportMetadata.detailColumns");
 		return jsonRows.parallelStream().map(row -> {
-			Map<String, Map<String, Object>> rowObj = new HashMap<String, Map<String, Object>>(); 
+			Map<String, Map<String, Object>> rowObj = new HashMap<>();
 			Iterator<String> keyIterator = columnList.iterator();
 			Iterator<Map<String, Object>> valueIterator = row.stream().iterator();
 			while (keyIterator.hasNext() && valueIterator.hasNext()) {
@@ -318,5 +293,30 @@ public class SalesforceObjectHelper {
 			LOG.warn("Failed to parse null date string", npe);
 		}
 		return aDate;
+	}
+
+	/**
+	 * Throw the root cause in the exception stack
+	 *
+	 * @param e
+	 * @throws Exception
+	 */
+	public static void throwRootCause(Exception e) throws Exception {
+		if (e instanceof CamelExecutionException) {
+			Throwable t = e.getCause();
+			while (t.getCause() != null) {
+				t = t.getCause();
+			}
+			//Caused by: org.apache.camel.component.salesforce.api.SalesforceException: {errors:[{"errorCode":"REQUEST_LIMIT_EXCEEDED","message":"TotalRequests Limit exceeded."}],statusCode:403}
+			if (t instanceof SalesforceException) {
+				DocumentContext document = JsonPath.using(jsonConfig).parse(t.getMessage());
+				List<String> errorCodes = document.read("$.errors[?(@.errorCode)]");
+				if (errorCodes.contains("REQUEST_LIMIT_EXCEEDED") || errorCodes.contains("FORBIDDEN")) {
+					throw new Exception("ERROR_SALESFORCE_API_LIMIT_EXCEED", t);
+				}
+			}
+		}
+		throw new Exception("ERROR_SALESFORCE_UNKNOWN_ERROR", e);
+
 	}
 }

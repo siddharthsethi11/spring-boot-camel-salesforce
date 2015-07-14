@@ -7,6 +7,7 @@ import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_
 import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_CREATE_BATCH;
 import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_CREATE_JOB;
 import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_CREATE_REPORT_INSTANCE;
+import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_DESCRIBE_REPORT;
 import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_FAILED_LOGIN;
 import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_GET_BATCH_DATA;
 import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_GET_BATCH_RESULTS;
@@ -15,10 +16,12 @@ import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_
 import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_GET_INSTANCE_DATA;
 import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_GET_OBJECT;
 import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_GET_OBJECT_WINDOW;
+import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_GET_REPORT_DATA;
 import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_GET_VERSIONS;
 import static com.github.deeprot.integration.camel.SalesforceProcessor.FROM_URI_LIST_REPORTS;
 import static com.github.deeprot.integration.camel.SalesforceProcessor.HEADER_CREDENTIALS;
 import static com.github.deeprot.integration.camel.SalesforceProcessor.RESPONSE_TIMEOUT;
+import static org.apache.camel.component.salesforce.internal.OperationName.*;
 
 import java.util.Map;
 
@@ -188,13 +191,20 @@ public class DynamicSalesforceComponentRouter {
 				StringBuilder query = new StringBuilder(componentName(creds))
 					.append(":query?sObjectClass=").append(QueryRecords.class.getName());
 				return query.toString();
+			} else if (toEndpoint.endsWith(FROM_URI_DESCRIBE_REPORT)) {
+				return componentName(creds) + ":"
+						+ DESCRIBE_REPORT.value();
+			} else if (toEndpoint.endsWith(FROM_URI_GET_REPORT_DATA)) {
+				return componentName(creds) + ":"
+						+ GET_REPORT_DATA.value()
+						+ "?includeDetails=" + properties.get("includeDetails");
 			} else if (toEndpoint.endsWith(FROM_URI_CREATE_REPORT_INSTANCE)) {
 				return componentName(creds) + ":" 
-					+ OperationName.CREATE_REPORT_DATA_INSTANCE.value()
+					+ CREATE_REPORT_DATA_INSTANCE.value()
 					+ "?includeDetails=" + properties.get("includeDetails");
 			} else if (toEndpoint.endsWith(FROM_URI_GET_INSTANCE_DATA)) {
 				return componentName(creds) + ":" 
-					+ OperationName.GET_REPORT_INSTANCE_DATA.value()
+					+ GET_REPORT_INSTANCE_DATA.value()
 					+ "?reportId=" + properties.get("reportId");
 			} else {
 				/*
@@ -323,9 +333,31 @@ public class DynamicSalesforceComponentRouter {
 		return slipOnce(creds, properties, query);
 	}
 
-	@Consume(uri = FROM_COMPONENT + FROM_URI_CREATE_REPORT_INSTANCE)
+	@Consume(uri = FROM_COMPONENT + FROM_URI_DESCRIBE_REPORT)
 	@DynamicRouter
 	public String describeReport(
+			@Header(HEADER_CREDENTIALS) SalesforceCredentials creds,
+			@Properties Map<String, Object> properties, @Body String reportId) {
+		return slipOnce(creds, properties, reportId);
+	}
+
+	@Consume(uri = FROM_COMPONENT + FROM_URI_GET_REPORT_DATA)
+	@DynamicRouter
+	public String getReportData(
+			@Header(HEADER_CREDENTIALS) SalesforceCredentials creds,
+			@Header("includeDetails") boolean includeDetails,
+			@Properties Map<String, Object> properties, @Body Object body) {
+		properties.put("includeDetails", includeDetails);
+		if (body instanceof String) {
+			return slipOnce(creds, properties, body);
+		} else {
+			return null;
+		}
+	}
+	
+	@Consume(uri = FROM_COMPONENT + FROM_URI_CREATE_REPORT_INSTANCE)
+	@DynamicRouter
+	public String executeReportAsync(
 			@Header(HEADER_CREDENTIALS) SalesforceCredentials creds,
 			@Header("includeDetails") boolean includeDetails,
 			@Properties Map<String, Object> properties, @Body String reportId) {
@@ -335,7 +367,7 @@ public class DynamicSalesforceComponentRouter {
 
 	@Consume(uri = FROM_COMPONENT + FROM_URI_GET_INSTANCE_DATA)
 	@DynamicRouter
-	public String getReportData(
+	public String getReportDataAsync(
 			@Header(HEADER_CREDENTIALS) SalesforceCredentials creds,
 			@Header("reportId") String reportId,
 			@Properties Map<String, Object> properties, @Body Object body) {
